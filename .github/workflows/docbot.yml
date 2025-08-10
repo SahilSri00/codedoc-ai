@@ -55,7 +55,7 @@ jobs:
 
       - name: Run parser tests (fail fast)
         run: |
-          poetry run pytest src/codedoc_ai/parser --maxfail=1 --disable-warnings -v
+          poetry run pytest tests --maxfail=1 --disable-warnings -v
 
       - name: Get changed files
         id: changed-files

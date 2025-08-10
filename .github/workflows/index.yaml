@@ -43,7 +43,7 @@ jobs:
         run: poetry run codedoc-ai index .
 
       - name: Generate documentation (output to docs/generated)
-        run: poetry run codedoc-ai generate . --out docs/generated/
+        run: poetry run codedoc-ai generate .docs/generated/
 
       - name: Upload generated docs
         uses: actions/upload-artifact@v4
