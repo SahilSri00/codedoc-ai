@@ -9,6 +9,20 @@ from codedoc_ai.indexer import build_index
 console = Console(stderr=True)
 app = typer.Typer()
 
+# Map user-friendly language names to internal codes
+LANG_ALIASES = {
+    "py": "py",
+    "python": "py",
+    "js": "js",
+    "javascript": "js",
+    "ts": "js",
+    "java": "java",
+    "rs": "rust",
+    "rust": "rust",
+    "go": "go",
+    "cpp": "cpp",
+    "c++": "cpp",
+}
 
 # --------------------------------
 # CLI 1 : inspect AST
@@ -24,7 +38,6 @@ def parse(file: Path):
     functions = detect_and_parse(file)
     for f in functions:
         console.print_json(data=f.dict())
-
 
 # --------------------------------
 # CLI 2 : generate docs
@@ -42,16 +55,20 @@ def generate(file: Path):
     for f in result["functions"]:
         console.print(f"[green]def {f['name']}[/green] ➜ {f['docstring']}")
 
-
 # --------------------------------
 # CLI 3 : semantic search
 # --------------------------------
 @app.command()
 def ask(query: str, lang: str = typer.Option("py", help="Language to search")):
     """Semantic Q&A over the indexed codebase."""
-    hits = search_query(query, lang=lang)
+    key = lang.lower()
+    if key not in LANG_ALIASES:
+        console.print(f"[red]Unsupported language '{lang}'.[/red]")
+        console.print(f"Available languages: {', '.join(LANG_ALIASES.keys())}")
+        raise typer.Exit(1)
+    normalized = LANG_ALIASES[key]
+    hits = search_query(query, lang=normalized)
     console.print_json(data=hits)
-
 
 # --------------------------------
 # CLI 4 : build vector index
@@ -80,9 +97,15 @@ def index(
         else:
             lang = "py"  # fallback
 
-    build_index(repo_root, lang=lang)
-    console.print(f"[green]✅ Indexed .{lang} files in {repo_root}[/green]")
+    key = lang.lower()
+    if key not in LANG_ALIASES:
+        console.print(f"[red]Unsupported language '{lang}'.[/red]")
+        console.print(f"Available languages: {', '.join(LANG_ALIASES.keys())}")
+        raise typer.Exit(1)
+    normalized = LANG_ALIASES[key]
 
+    build_index(repo_root, lang=normalized)
+    console.print(f"[green]✅ Indexed .{normalized} files in {repo_root}[/green]")
 
 # --------------------------------
 # Entry-point

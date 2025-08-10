@@ -2,30 +2,36 @@
 Go parser for CodeDoc-AI.
 Extracts FunctionSchema objects from .go files.
 """
-from tree_sitter import Parser, Language , Node
+import textwrap
+from tree_sitter import Parser, Language, Node
 import tree_sitter_go as tsgo
 from pathlib import Path
-from typing import List
-from ..models.schemas import FunctionSchema
+from typing import List, Optional
 
+from ..models.schemas import FunctionSchema
+from ..utils.ids import make_unique_id_uuid
+
+
+# Initialize parser
 LANG = Language(tsgo.language())
 parser = Parser()
 parser.language = LANG
 
 
-def _text(node: Node) -> str:
+# ----------------------------------------
+# Helpers
+# ----------------------------------------
+def _text(node: Optional[Node]) -> str:
     """Decode node text or return empty string."""
-    return node.text.decode() if node else ""
+    return node.text.decode("utf-8") if node else ""
 
 
-def _extract_args(params_node: Node) -> List[str]:
+def _extract_args(params_node: Optional[Node]) -> List[str]:
     """
     Extract function arguments from parameter_declaration nodes.
     Handles named params like `x int`, grouped like `x, y int`, and unnamed `_`.
     """
-    if not params_node:
-        return []
-    args = []
+    args: List[str] = []
     if not params_node:
         return args
 
@@ -39,7 +45,7 @@ def _extract_args(params_node: Node) -> List[str]:
     return args
 
 
-def _extract_doc(node: Node) -> str | None:
+def _extract_doc(node: Node) -> Optional[str]:
     """
     Extract docstring comment immediately above the function.
     Supports `//` and `/* */` styles.
@@ -48,47 +54,77 @@ def _extract_doc(node: Node) -> str | None:
     if not parent:
         return None
 
-    for sibling in reversed(parent.children[:parent.children.index(node)]):
+    docs: List[str] = []
+    for sibling in reversed(parent.children[: parent.children.index(node)]):
         if sibling.type == "comment":
             txt = _text(sibling).strip()
             if txt.startswith("//") or txt.startswith("/*"):
-                return txt.strip("/ *")
-        else:
+                cleaned = txt.lstrip("/ *").rstrip("*/ ").strip()
+                docs.append(cleaned)
+        elif sibling.is_named:
             break
-    return None
+    return "\n".join(reversed(docs)) if docs else None
 
 
-def _parse_function_node(node: Node) -> FunctionSchema:
+def _parse_function_node(node: Node, file_path: Path, lang: str) -> FunctionSchema:
     """
-    Converts a function_declaration node to FunctionSchema.
+    Converts a function_declaration node to FunctionSchema,
+    including unique ID, source code, and metadata.
     """
     name_node = node.child_by_field_name("name")
     params_node = node.child_by_field_name("parameters")
-    body = node.child_by_field_name("body")
+    start_line = node.start_point[0] + 1
+    start_col = node.start_point[1] + 1
+    end_line = node.end_point[0] + 1
+
+    function_name = _text(name_node) or "<anonymous>"
     docstring = _extract_doc(node)
 
+    # Extract raw source code and clean indentation
+    raw_source = node.text.decode("utf-8")
+    cleaned_source = textwrap.dedent(raw_source).strip()
+
+    # Generate unique ID
+    func_id = make_unique_id_uuid(
+        lang,
+        function_name,
+        str(file_path),
+        start_line,
+        start_col,
+    )
+
     return FunctionSchema(
-        name=_text(name_node) or "<anonymous>",
+        id=func_id,
+        name=function_name,
+        source_code=cleaned_source,
+        file_path=str(file_path),
         docstring=docstring,
         args=_extract_args(params_node),
-        return_type=None,  # Go doesn't have static return types easily parsed
-        start_line=node.start_point[0] + 1,
-        end_line=node.end_point[0] + 1,
+        return_type=None,  # Go return types require extra parsing if needed
+        start_line=start_line,
+        end_line=end_line,
     )
 
 
-def parse_file(file_path: Path) -> List[FunctionSchema]:
+# ----------------------------------------
+# Public API
+# ----------------------------------------
+def parse_file(file_path: Path, lang: str = "go") -> List[FunctionSchema]:
     """
     Parse a Go source file and extract all functions.
     """
-    source = file_path.read_bytes()
-    tree = parser.parse(source)
+    source_bytes = file_path.read_bytes()
+    tree = parser.parse(source_bytes)
     root = tree.root_node
+
     functions: List[FunctionSchema] = []
 
     def walk(node: Node):
         if node.type == "function_declaration":
-            functions.append(_parse_function_node(node))
+            try:
+                functions.append(_parse_function_node(node, file_path, lang))
+            except Exception as e:
+                print(f"Error parsing Go function at {file_path}:{node.start_point}: {e}")
         for child in node.children:
             walk(child)
 

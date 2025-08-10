@@ -1,10 +1,17 @@
 import hashlib
+import uuid
+from pathlib import Path
 
-def make_unique_id(lang: str, name: str, file_path: str, line: int, col: int) -> str:
-    name = name or "anonymous"
-    id_source = f"{file_path}:{line}:{col}:{name}"
-    short_hash = hashlib.sha1(id_source.encode()).hexdigest()[:6]
-    func_id = f"{lang}_{name}_{line}_{col}_{short_hash}"
+# Alternative: UUID-based approach (guaranteed unique)
+def make_unique_id_uuid(lang: str, function_name: str, file_path: str, start_line: int, start_col: int) -> str:
+    """
+    Generate UUID-based unique ID (guaranteed no collisions).
+    """
+    # Create namespace from the unique string
+    unique_string = f"{lang}:{function_name}:{file_path}:{start_line}:{start_col}"
     
-    print(f"[DEBUG] {func_id} from {id_source}")
-    return func_id
+    # Generate UUID5 (deterministic) based on the string
+    namespace = uuid.UUID('6ba7b810-9dad-11d1-80b4-00c04fd430c8')  # DNS namespace
+    unique_uuid = uuid.uuid5(namespace, unique_string)
+    
+    return f"{lang}_{str(unique_uuid).replace('-', '_')}"
