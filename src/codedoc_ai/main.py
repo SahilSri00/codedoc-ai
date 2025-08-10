@@ -44,33 +44,44 @@ def parse(file: Path):
 # --------------------------------
 @app.command()
 def generate(
-    file: Path,
+    path: Path,
     out: Path = typer.Option(Path("docs/generated"), "--out", help="Output directory for docs"),
-    ):
-    """Generate hybrid LLM docs (Gemini deep, Groq summary)."""
-    file = file.resolve()
-    if not file.exists():
-        console.print("[red]File not found[/red]")
+):
+    """
+    Generate hybrid LLM docs (Gemini deep, Groq summary).
+    Accepts either a single file or a folder (recursively).
+    """
+
+    path = path.resolve()
+    if not path.exists():
+        console.print(f"[red]Path not found: {path}[/red]")
         raise typer.Exit(1)
 
-    # Make sure the output directory exists
+    # Ensure output directory exists
     out = out.resolve()
     out.mkdir(parents=True, exist_ok=True)
 
-    # Generate docs using existing generator function
-    result = generate_docs(file)                
+    # Get list of files to process
+    files = [path] if path.is_file() else [p for p in path.rglob("*") if p.suffix]
 
-    # Compose output markdown file path
-    md_path = out / f"{file.stem}.md"
+    for file in files:
+        result = generate_docs(file)
 
-    # Write summary and function docstrings to Markdown file
-    with open(md_path, "w", encoding="utf-8") as md_file:
-        md_file.write(f"# Summary\n\n{result['summary']}\n\n")
-        for fdata in result["functions"]:
-            md_file.write(f"## {fdata['name']}\n\n``````\n\n")
+        # Compose output markdown file path
+        md_path = out / f"{file.stem}.md"
 
-    console.print(f"[bold cyan]Summary:[/bold cyan] {result['summary']}")
-    console.print(f"[green]✅ Docs saved to {md_path}[/green]")
+        # Write summary and function docstrings to Markdown file
+        with open(md_path, "w", encoding="utf-8") as md_file:
+            md_file.write(f"# Summary\n\n{result['summary']}\n\n")
+            for fdata in result["functions"]:
+                md_file.write(f"## {fdata['name']}\n\n")
+                if fdata.get("docstring"):
+                    md_file.write(f"{fdata['docstring']}\n\n")
+                else:
+                    md_file.write("_No docstring provided_\n\n")
+
+        console.print(f"[bold cyan]Processed:[/bold cyan] {file}")
+        console.print(f"[green]✅ Docs saved to {md_path}[/green]")
 
 
 # --------------------------------
