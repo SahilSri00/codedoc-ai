@@ -43,17 +43,35 @@ def parse(file: Path):
 # CLI 2 : generate docs
 # --------------------------------
 @app.command()
-def generate(file: Path):
+def generate(
+    file: Path,
+    out: Path = typer.Option(Path("docs/generated"), "--out", help="Output directory for docs"),
+    ):
     """Generate hybrid LLM docs (Gemini deep, Groq summary)."""
     file = file.resolve()
     if not file.exists():
         console.print("[red]File not found[/red]")
         raise typer.Exit(1)
 
-    result = generate_docs(file)
+    # Make sure the output directory exists
+    out = out.resolve()
+    out.mkdir(parents=True, exist_ok=True)
+
+    # Generate docs using existing generator function
+    result = generate_docs(file)                
+
+    # Compose output markdown file path
+    md_path = out / f"{file.stem}.md"
+
+    # Write summary and function docstrings to Markdown file
+    with open(md_path, "w", encoding="utf-8") as md_file:
+        md_file.write(f"# Summary\n\n{result['summary']}\n\n")
+        for fdata in result["functions"]:
+            md_file.write(f"## {fdata['name']}\n\n``````\n\n")
+
     console.print(f"[bold cyan]Summary:[/bold cyan] {result['summary']}")
-    for f in result["functions"]:
-        console.print(f"[green]def {f['name']}[/green] ➜ {f['docstring']}")
+    console.print(f"[green]✅ Docs saved to {md_path}[/green]")
+
 
 # --------------------------------
 # CLI 3 : semantic search

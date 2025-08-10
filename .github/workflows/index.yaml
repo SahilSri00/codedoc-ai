@@ -42,13 +42,8 @@ jobs:
       - name: Run CodeDoc-AI indexing (auto-detect all languages)
         run: poetry run codedoc-ai index .
 
-      - name: Generate documentation
-        run: poetry run codedoc-ai generate .
-
-      - name: Prepare docs for upload
-        run: |
-          mkdir -p docs/generated
-          cp -r .codedoc-ai/* docs/generated/ || echo "No docs found"
+      - name: Generate documentation (output to docs/generated)
+        run: poetry run codedoc-ai generate . --out docs/generated/
 
       - name: Upload generated docs
         uses: actions/upload-artifact@v4
