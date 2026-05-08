@@ -1,54 +1,145 @@
-name: Update Vector Index
+name: CodeDoc-AI — Auto-Document on Push
 
 on:
   push:
     branches: [main]
+    paths:
+      - "src/**"
+      - "**/*.py"
+      - "**/*.java"
+      - "**/*.js"
+      - "**/*.ts"
+      - "**/*.go"
+      - "**/*.rs"
+      - "**/*.cpp"
+
+permissions:
+  contents: write
 
 jobs:
-  index:
+  generate-and-commit:
     runs-on: ubuntu-latest
+
     env:
-      GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
       GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
 
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      # --------------------------------------------------
+      # 1. Checkout
+      # --------------------------------------------------
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 2  # Need previous commit for diff
+          token: ${{ secrets.GITHUB_TOKEN }}
 
+      # --------------------------------------------------
+      # 2. Python + Poetry setup
+      # --------------------------------------------------
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
           python-version: "3.11"
 
-      - name: Cache Poetry dependencies
-        uses: actions/cache@v3
+      - name: Cache Poetry deps
+        uses: actions/cache@v4
         with:
-          path: ~/.cache/pypoetry
+          path: |
+            ~/.cache/pypoetry
+            ~/.local
           key: poetry-${{ runner.os }}-${{ hashFiles('poetry.lock') }}
-          restore-keys: |
-            poetry-${{ runner.os }}-
-
-      - name: Install Poetry
-        run: pip install poetry
+          restore-keys: poetry-${{ runner.os }}-
 
       - name: Install dependencies
         run: |
+          pip install poetry
           poetry config virtualenvs.create false
           poetry install --no-interaction --no-ansi
 
-      - name: Run parser tests
+      # --------------------------------------------------
+      # 3. Run tests
+      # --------------------------------------------------
+      - name: Run tests
         run: poetry run pytest tests --maxfail=1 --disable-warnings -v
 
-      - name: Run CodeDoc-AI indexing (auto-detect all languages)
-        run: poetry run codedoc-ai index .
+      # --------------------------------------------------
+      # 4. Detect changed source files (diff-aware)
+      # --------------------------------------------------
+      - name: Get changed files
+        id: changed
+        run: |
+          git diff --name-only HEAD~1 > all_changed.txt
 
-      - name: Generate documentation (skip unknown file types, output to docs/generated)
+          grep -E '\.(py|js|ts|java|rs|go|cpp|cc|hpp)$' all_changed.txt > relevant_files.txt || true
+
+          FILE_COUNT=$(wc -l < relevant_files.txt | tr -d ' ')
+          echo "count=$FILE_COUNT" >> $GITHUB_OUTPUT
+
+          if [ "$FILE_COUNT" -gt 0 ]; then
+            echo "has_changes=true" >> $GITHUB_OUTPUT
+            echo "📄 $FILE_COUNT file(s) to document:"
+            cat relevant_files.txt
+          else
+            echo "has_changes=false" >> $GITHUB_OUTPUT
+            echo "No source files changed — skipping doc generation"
+          fi
+
+      # --------------------------------------------------
+      # 5. Generate docs for changed files only
+      # --------------------------------------------------
+      - name: Generate documentation
+        if: steps.changed.outputs.has_changes == 'true'
         run: |
           mkdir -p docs/generated
-          poetry run codedoc-ai generate . --skip-unknown --out docs/generated/
 
-      - name: Upload generated docs
+          while IFS= read -r file; do
+            if [ -f "$file" ]; then
+              echo "📝 Generating docs for: $file"
+              poetry run codedoc-ai generate "$file" --out docs/generated/ || echo "⚠️ Failed: $file"
+            fi
+          done < relevant_files.txt
+
+      # --------------------------------------------------
+      # 6. Commit & push generated docs back to main
+      # --------------------------------------------------
+      - name: Commit generated docs
+        if: steps.changed.outputs.has_changes == 'true'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+          git add docs/generated/
+
+          if git diff --staged --quiet; then
+            echo "✅ No documentation changes to commit"
+          else
+            CHANGED_LIST=$(cat relevant_files.txt | tr '\n' ', ' | sed 's/, $//')
+            git commit -m "📝 docs: auto-update for ${{ steps.changed.outputs.count }} file(s)
+
+            Files: $CHANGED_LIST
+            Triggered by: ${{ github.sha }}"
+            git push
+            echo "✅ Docs committed and pushed"
+          fi
+
+      # --------------------------------------------------
+      # 7. Upload as artifact too
+      # --------------------------------------------------
+      - name: Upload docs artifact
+        if: steps.changed.outputs.has_changes == 'true'
         uses: actions/upload-artifact@v4
         with:
-          name: generated-docs
+          name: codedoc-ai-docs
           path: docs/generated/
+          retention-days: 90
+
+      # --------------------------------------------------
+      # 8. Job summary
+      # --------------------------------------------------
+      - name: Summary
+        if: always()
+        run: |
+          echo "### 📝 CodeDoc-AI Summary" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "- **Status:** ${{ job.status }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Files changed:** ${{ steps.changed.outputs.count || '0' }}" >> $GITHUB_STEP_SUMMARY
+          echo "- **Trigger:** \`${{ github.sha }}\`" >> $GITHUB_STEP_SUMMARY
