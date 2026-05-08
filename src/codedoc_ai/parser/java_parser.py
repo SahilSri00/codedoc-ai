@@ -29,21 +29,36 @@ def _extract_doc(node: Node) -> Optional[str]:
     """
     Extracts the first block or line comment immediately preceding the method declaration.
     """
-    # Look for comments attached to the method node
-    # Tree-sitter Java attaches javadoc in "documentation" field if available
+    # Primary: tree-sitter-java exposes javadoc in "documentation" field
     doc_node = node.child_by_field_name("documentation")
     if doc_node:
         return _text(doc_node).strip()
 
-    # Fallback: scan siblings before body
-    body = node.child_by_field_name("body")
-    if body:
-        for sibling in node.prev_siblings:
-            if sibling.type in ("line_comment", "block_comment"):
-                return _text(sibling).strip("/* ").strip(" */").strip()
-            # stop if non-comment encountered
-            if sibling.is_named:
-                break
+    # Fallback: scan the parent's children list to find the comment that
+    # immediately precedes this method node (prev_siblings is not available in
+    # older tree-sitter Python bindings).
+    parent = node.parent
+    if parent is None:
+        return None
+
+    children = parent.children
+    try:
+        idx = children.index(node)
+    except ValueError:
+        return None
+
+    # Walk backwards from the node's position
+    for i in range(idx - 1, -1, -1):
+        sibling = children[i]
+        if sibling.type in ("line_comment", "block_comment"):
+            raw = _text(sibling)
+            # Strip JavaDoc / block-comment markers
+            cleaned = raw.strip().lstrip("/").lstrip("*").strip()
+            return cleaned if cleaned else None
+        # Stop as soon as we hit any other named node
+        if sibling.is_named:
+            break
+
     return None
 
 

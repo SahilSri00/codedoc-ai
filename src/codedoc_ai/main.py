@@ -1,7 +1,7 @@
 import typer
 from pathlib import Path
 from rich.console import Console
-from codedoc_ai.router import detect_and_parse
+from codedoc_ai.router import detect_and_parse , detect_lang
 from codedoc_ai.generator import generate as generate_docs
 from codedoc_ai.search import query as search_query
 from codedoc_ai.indexer import build_index
@@ -32,56 +32,45 @@ def parse(file: Path):
     """Extract structured info from any supported file."""
     file = file.resolve()
     if not file.exists():
-        console.print("[red]File not found[/red]", err=True)
+        console.print("[red]File not found[/red]")
         raise typer.Exit(1)
 
     functions = detect_and_parse(file)
     for f in functions:
-        console.print_json(data=f.dict())
+        console.print_json(data=f.model_dump())
 
 # --------------------------------
 # CLI 2 : generate docs
 # --------------------------------
 @app.command()
 def generate(
-    path: Path,
+    file: Path,
     out: Path = typer.Option(Path("docs/generated"), "--out", help="Output directory for docs"),
 ):
-    """
-    Generate hybrid LLM docs (Gemini deep, Groq summary).
-    Accepts either a single file or a folder (recursively).
-    """
-
-    path = path.resolve()
-    if not path.exists():
-        console.print(f"[red]Path not found: {path}[/red]")
-        raise typer.Exit(1)
-
-    # Ensure output directory exists
+    """Generate hybrid LLM docs (Gemini deep, Groq summary)."""
+    file = file.resolve()
     out = out.resolve()
     out.mkdir(parents=True, exist_ok=True)
 
-    # Get list of files to process
-    files = [path] if path.is_file() else [p for p in path.rglob("*") if p.suffix]
+    if file.is_dir():
+        paths = [p for p in file.rglob("*") if p.is_file()]
+    else:
+        paths = [file]
 
-    for file in files:
-        result = generate_docs(file)
+    for path in paths:
+        try:
+            lang = detect_lang(path)
+            if lang == "unknown":
+                console.print(f"[yellow]Skipping {path} (unknown language)[/yellow]")
+                continue
+            result = generate_docs(path)
+            md_path = out / f"{path.stem}.md"
+            with open(md_path, "w", encoding="utf-8") as md_file:
+                md_file.write(result["summary"])
+            console.print(f"[green]✅ Docs saved to {md_path}[/green]")
+        except Exception as e:
+            console.print(f"[red]Error processing {path}[/red]: {e}")
 
-        # Compose output markdown file path
-        md_path = out / f"{file.stem}.md"
-
-        # Write summary and function docstrings to Markdown file
-        with open(md_path, "w", encoding="utf-8") as md_file:
-            md_file.write(f"# Summary\n\n{result['summary']}\n\n")
-            for fdata in result["functions"]:
-                md_file.write(f"## {fdata['name']}\n\n")
-                if fdata.get("docstring"):
-                    md_file.write(f"{fdata['docstring']}\n\n")
-                else:
-                    md_file.write("_No docstring provided_\n\n")
-
-        console.print(f"[bold cyan]Processed:[/bold cyan] {file}")
-        console.print(f"[green]✅ Docs saved to {md_path}[/green]")
 
 
 # --------------------------------

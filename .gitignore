@@ -1,9 +1,21 @@
 __pycache__/
 *.pyc
+*.pyo
 .env
+.env.local
+.env.production
 .venv/
 .pytest_cache/
 dist/
+build/
 .vscode/
-.env.local
-.env.production
+
+# CodeDoc-AI vector store
+.codedoc-ai/
+
+# Generated documentation output
+docs/generated/
+
+# Scratch output directories
+tmp_doc*/
+tmp_docs/
