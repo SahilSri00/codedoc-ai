@@ -45,18 +45,26 @@ poetry shell
 Create a `.env` file in the project root:
 
 ```env
-GEMINI_API_KEY=your_gemini_api_key_here
-GROQ_API_KEY=your_groq_api_key_here
+# Choose your LLM provider: groq (default), gemini, openai, ollama
+CODEDOC_PROVIDER=groq
 
-# Optional overrides
-CODEDOC_GEMINI_MODEL=gemini-2.0-flash
-CODEDOC_GEMINI_TEMPERATURE=0.2
-CODEDOC_GEMINI_MAX_TOKENS=2048
+# Provider API keys (only the one you're using needs to be set)
+GROQ_API_KEY=your_groq_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
+OPENAI_API_KEY=your_openai_api_key_here
+
+# Ollama (local, no API key needed)
+# OLLAMA_MODEL=llama3.1
+# OLLAMA_BASE_URL=http://localhost:11434
 ```
 
 Get your keys:
+- Groq: https://console.groq.com/keys (free tier)
 - Gemini: https://aistudio.google.com/app/apikey
-- Groq: https://console.groq.com/keys
+- OpenAI: https://platform.openai.com/api-keys
+- Ollama: https://ollama.ai (local, no key needed)
+
+Or override per-command: `codedoc-ai generate file.py --provider openai`
 
 ---
 
@@ -97,6 +105,60 @@ Output format per file:
 
 ---
 
+### `inject` — Inject docstrings into source code
+
+The killer feature. Generates AI-powered docstrings and writes them **directly into your source files** using the correct comment syntax for each language.
+
+```bash
+# Preview what would change (no files modified)
+codedoc-ai inject path/to/file.java --dry-run
+
+# Inject into the original file
+codedoc-ai inject path/to/file.java
+
+# Create a documented copy (original untouched)
+codedoc-ai inject path/to/file.java --out docs/injected/
+
+# Replace existing docstrings with fresh ones
+codedoc-ai inject path/to/file.java --replace
+
+# Create a backup before modifying
+codedoc-ai inject path/to/file.java --backup
+
+# Process an entire directory
+codedoc-ai inject src/ --out docs/injected/
+```
+
+**Before:**
+```java
+public class Demo1 {
+    public int add(int a, int b, int c) {
+        return a + b - c;
+    }
+}
+```
+
+**After:**
+```java
+public class Demo1 {
+    /**
+     * Adds three integers together, subtracting the third from the sum.
+     *
+     * @param a The first integer to add.
+     * @param b The second integer to add.
+     * @param c The integer to subtract from the sum.
+     * @return The result of (a + b - c).
+     */
+    public int add(int a, int b, int c) {
+        return a + b - c;
+    }
+}
+```
+
+Language-specific formats: Python `"""..."""`, Java/JS `/** */`, Go `//`, Rust `///`, C++ `/** */`.
+
+---
+
 ### `index` — Build the vector search index
 
 Embed every function in a repo and store it in ChromaDB for semantic search.
@@ -126,17 +188,38 @@ Returns the top 3 matching functions with file path, line numbers, and similarit
 
 ---
 
+### Diff-Aware Mode (All Commands)
+
+All commands that process files (`generate`, `inject`, `index`) support diff-aware mode to skip unchanged files:
+
+```bash
+# Hash-based: skip files unchanged since last run (works everywhere)
+codedoc-ai generate src/ --changed-only
+codedoc-ai inject src/ --changed-only
+codedoc-ai index . --changed-only
+
+# Git-based: only process files changed in git
+codedoc-ai generate src/ --git-diff
+codedoc-ai inject src/ --git-diff
+```
+
+File hashes are stored in `.codedoc-ai/manifest.json`. On large repos, this saves significant time and LLM API calls.
+
+---
+
 ## Project Structure
 
 ```
 src/codedoc_ai/
-├── main.py          ← Typer CLI entry-point
+├── main.py          ← Typer CLI entry-point (6 commands)
 ├── router.py        ← Language detection + parser dispatch
 ├── generator.py     ← Orchestrates the hybrid LLM pipeline
+├── injector.py      ← Docstring injection engine (in-place + copy)
+├── tracker.py       ← Diff-aware file change tracking (hash + git)
 ├── parser/          ← Per-language AST parsers (tree-sitter + stdlib ast)
 ├── providers/
 │   ├── gemini.py    ← Gemini 2.0 Flash — per-function docstrings
-│   └── groq.py      ← Groq Llama 3.1 — file-level summaries
+│   └── groq.py      ← Groq Llama 3.1 — file-level summaries + docstrings
 ├── embedder/        ← sentence-transformers (all-MiniLM-L6-v2)
 ├── indexer/         ← ChromaDB index builder
 ├── search/          ← Semantic vector search

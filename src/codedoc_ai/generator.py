@@ -1,51 +1,48 @@
 """
 generator.py — Orchestrates the hybrid LLM documentation pipeline.
 
-Hybrid LLM Architecture
-------------------------
-- **Gemini 2.0 Flash** (deep, structured):  per-function Google-style docstrings.
-- **Groq / Llama 3.1 8B** (fast, conversational): high-level file summary.
-
-The two models complement each other — Gemini produces precise, typed documentation
-while Groq frames the file in plain, readable prose.
+Uses the provider factory to select the active LLM provider (Groq, Gemini,
+OpenAI, or Ollama). The provider is configured via ``CODEDOC_PROVIDER`` in
+.env or the ``--provider`` CLI flag.
 """
 from pathlib import Path
-from .providers.groq import generate_doc, summarize_file as groq_summarize
+from .providers.factory import get_provider
 from .router import detect_and_parse
 
 
-def generate(file: Path, combined: bool = True) -> dict:
+def generate(file: Path, combined: bool = True, provider_name: str = None) -> dict:
     """
     Generate documentation for any supported source file.
 
-    Runs the hybrid LLM pipeline:
+    Runs the LLM pipeline:
     1. Parse the file into function/method schemas.
-    2. Ask **Gemini** to write a Google-style docstring for every function.
-    3. Ask **Groq** (Llama 3.1) to write a high-level file summary.
+    2. Generate a Google-style docstring for every function.
+    3. Generate a high-level file summary.
     4. Merge both outputs into a single Markdown document.
 
     Args:
-        file: Path to the source file. Supported languages: Python, JavaScript,
-              TypeScript, Java, Go, Rust, C++.
-        combined: Reserved for future use; always runs the hybrid pipeline.
+        file: Path to the source file.
+        combined: Reserved for future use.
+        provider_name: Override the default provider (groq/gemini/openai/ollama).
 
     Returns:
         dict with keys:
-            ``"summary"``   — Full Markdown document (Groq overview + Gemini per-function docs).
-            ``"functions"`` — List of raw FunctionSchema dicts from the parser.
+            ``"summary"``   — Full Markdown document.
+            ``"functions"`` — List of raw FunctionSchema dicts.
     """
     file = Path(file)
     source_code = file.read_text(encoding="utf-8", errors="ignore")
+    provider = get_provider(provider_name)
 
     # Step 1 — Parse
     functions = detect_and_parse(file)
 
-    # Step 2 — Gemini: per-function docstrings
+    # Step 2 — Per-function docstrings
     for func in functions:
-        func.docstring = generate_doc(func)
+        func.docstring = provider.generate_doc(func)
 
-    # Step 3 — Groq: high-level file summary
-    file_summary = groq_summarize(file, functions, source_code=source_code)
+    # Step 3 — High-level file summary
+    file_summary = provider.summarize_file(file, functions, source_code=source_code)
 
     # Step 4 — Merge into a single Markdown document
     parts = []

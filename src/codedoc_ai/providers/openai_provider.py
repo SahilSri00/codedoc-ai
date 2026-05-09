@@ -1,8 +1,8 @@
 """
-Groq provider for CodeDoc-AI.
+OpenAI provider for CodeDoc-AI.
 
-Implements the LLMProvider interface using Groq's API with Llama 3.1 8B Instant.
-Handles both per-function docstring generation and file-level summaries.
+Implements the LLMProvider interface using OpenAI's API (GPT-4o-mini by default).
+Requires: ``pip install openai`` and ``OPENAI_API_KEY`` in .env.
 """
 from __future__ import annotations
 
@@ -11,16 +11,13 @@ from pathlib import Path
 from typing import List, Optional
 
 from dotenv import load_dotenv
-from groq import Groq
 
 from ..models.schemas import FunctionSchema
 from .base import LLMProvider
 
 load_dotenv()
 
-# ---------------------------------------------------------------------------
-# Prompt templates
-# ---------------------------------------------------------------------------
+# Reuse the same prompt templates
 _SUMMARY_SYSTEM = """\
 You are a senior software engineer writing concise, professional documentation.
 Given a source file's full code and a list of its parsed functions/methods, produce
@@ -45,38 +42,38 @@ Rules:
 - Keep the total output under 400 words.
 """
 
-_DOCSTRING_PROMPT = (
-    "You are a senior software engineer and technical writer.\n"
-    "Given the function below, return ONLY a Google-style docstring enclosed in triple double-quotes.\n"
-    "Include 1-line summary, Args, and Returns if applicable.\n"
-    "{func_sig}\n"
-    "Source code:\n{source_code}\n\n"
-    "Return ONLY the docstring. Do not include the function signature."
-)
 
+class OpenAIProvider(LLMProvider):
+    """LLM provider using OpenAI's API (GPT-4o-mini default)."""
 
-# ---------------------------------------------------------------------------
-# Provider implementation
-# ---------------------------------------------------------------------------
+    name = "openai"
 
-class GroqProvider(LLMProvider):
-    """LLM provider using Groq (Llama 3.1 8B Instant)."""
-
-    name = "groq"
-
-    def __init__(self, api_key: Optional[str] = None, model: str = "llama-3.1-8b-instant"):
-        self._api_key = api_key or os.getenv("GROQ_API_KEY", "")
+    def __init__(self, api_key: Optional[str] = None, model: str = "gpt-4o-mini"):
+        self._api_key = api_key or os.getenv("OPENAI_API_KEY", "")
         if not self._api_key:
             raise RuntimeError(
-                "GROQ_API_KEY is not set. Add it to your .env file or environment."
+                "OPENAI_API_KEY is not set. Add it to your .env file or environment."
             )
         self._model = model
-        self._client = Groq(api_key=self._api_key)
+
+        try:
+            from openai import OpenAI  # type: ignore[import-not-found]
+        except ImportError:
+            raise RuntimeError(
+                "OpenAI SDK not installed. Run: pip install openai"
+            )
+        self._client = OpenAI(api_key=self._api_key)
 
     def generate_doc(self, func: FunctionSchema) -> str:
         """Generate a Google-style docstring for a single function."""
-        func_sig = f"Function: {func.name}({', '.join(func.args)}) -> {func.return_type}"
-        prompt = _DOCSTRING_PROMPT.format(func_sig=func_sig, source_code=func.source_code)
+        prompt = (
+            "You are a senior software engineer and technical writer.\n"
+            "Given the function below, return ONLY a Google-style docstring enclosed in triple double-quotes.\n"
+            "Include 1-line summary, Args, and Returns if applicable.\n"
+            f"Function: {func.name}({', '.join(func.args)}) -> {func.return_type}\n"
+            f"Source code:\n{func.source_code}\n\n"
+            "Return ONLY the docstring. Do not include the function signature."
+        )
 
         try:
             response = self._client.chat.completions.create(
@@ -90,7 +87,7 @@ class GroqProvider(LLMProvider):
                 text = f'"""\n{text.strip("`")}\n"""'
             return text
         except Exception as exc:
-            print(f"[Groq] generate_doc failed: {exc}")
+            print(f"[OpenAI] generate_doc failed: {exc}")
             return ""
 
     def summarize_file(
@@ -106,14 +103,11 @@ class GroqProvider(LLMProvider):
             except Exception as exc:
                 return f"_Could not read source file: {exc}_"
 
-        # Build function manifest
         manifest_lines = []
         for f in functions:
             sig = f"{f.name}({', '.join(f.args)})"
             if f.return_type:
                 sig += f" -> {f.return_type}"
-            if f.docstring:
-                sig += f"  # {f.docstring[:80].strip()}"
             manifest_lines.append(f"  - {sig}")
 
         manifest = "\n".join(manifest_lines) if manifest_lines else "  (no functions found)"
@@ -137,30 +131,5 @@ class GroqProvider(LLMProvider):
             )
             return response.choices[0].message.content.strip()
         except Exception as exc:
-            print(f"[Groq] summarize_file failed: {exc}")
+            print(f"[OpenAI] summarize_file failed: {exc}")
             return ""
-
-
-# ---------------------------------------------------------------------------
-# Backward-compatible module-level functions
-# ---------------------------------------------------------------------------
-_default_provider: Optional[GroqProvider] = None
-
-
-def _get_default() -> GroqProvider:
-    global _default_provider
-    if _default_provider is None:
-        _default_provider = GroqProvider()
-    return _default_provider
-
-
-def generate_doc(func: FunctionSchema) -> str:
-    return _get_default().generate_doc(func)
-
-
-def summarize_file(
-    file_path: Path,
-    functions: List[FunctionSchema],
-    source_code: Optional[str] = None,
-) -> str:
-    return _get_default().summarize_file(file_path, functions, source_code)
