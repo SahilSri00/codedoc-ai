@@ -7,6 +7,7 @@ from codedoc_ai.search import query as search_query
 from codedoc_ai.indexer import build_index
 from codedoc_ai.injector import inject_docstrings
 from codedoc_ai.tracker import filter_changed_files, mark_processed
+from codedoc_ai.providers.factory import SUPPORTED_PROVIDERS
 
 console = Console(stderr=True)
 app = typer.Typer()
@@ -50,6 +51,7 @@ def generate(
     out: Path = typer.Option(Path("docs/generated"), "--out", help="Output directory for docs"),
     changed_only: bool = typer.Option(False, "--changed-only", help="Only process files that changed since last run"),
     git_diff: bool = typer.Option(False, "--git-diff", help="Use git diff to detect changes (instead of hash manifest)"),
+    provider: str = typer.Option(None, "--provider", help=f"LLM provider ({', '.join(SUPPORTED_PROVIDERS)})"),
 ):
     """Generate hybrid LLM docs (Gemini deep, Groq summary)."""
     file = file.resolve()
@@ -81,7 +83,7 @@ def generate(
             if lang == "unknown":
                 console.print(f"[yellow]Skipping {path} (unknown language)[/yellow]")
                 continue
-            result = generate_docs(path)
+            result = generate_docs(path, provider_name=provider)
             md_path = out / f"{path.stem}.md"
             with open(md_path, "w", encoding="utf-8") as md_file:
                 md_file.write(result["summary"])
@@ -176,6 +178,7 @@ def inject(
     out: Path = typer.Option(None, "--out", help="Write documented copy to this directory (original untouched)"),
     changed_only: bool = typer.Option(False, "--changed-only", help="Only process files that changed since last run"),
     git_diff: bool = typer.Option(False, "--git-diff", help="Use git diff to detect changes"),
+    provider: str = typer.Option(None, "--provider", help=f"LLM provider ({', '.join(SUPPORTED_PROVIDERS)})"),
 ):
     """Inject AI-generated docstrings directly into source files."""
     file = file.resolve()
@@ -220,6 +223,7 @@ def inject(
                 dry_run=dry_run,
                 backup=backup,
                 out_dir=out,
+                provider_name=provider,
             )
             total_injected += result["injected"]
             total_skipped += result["skipped"]

@@ -45,18 +45,26 @@ poetry shell
 Create a `.env` file in the project root:
 
 ```env
-GEMINI_API_KEY=your_gemini_api_key_here
-GROQ_API_KEY=your_groq_api_key_here
+# Choose your LLM provider: groq (default), gemini, openai, ollama
+CODEDOC_PROVIDER=groq
 
-# Optional overrides
-CODEDOC_GEMINI_MODEL=gemini-2.0-flash
-CODEDOC_GEMINI_TEMPERATURE=0.2
-CODEDOC_GEMINI_MAX_TOKENS=2048
+# Provider API keys (only the one you're using needs to be set)
+GROQ_API_KEY=your_groq_api_key_here
+GEMINI_API_KEY=your_gemini_api_key_here
+OPENAI_API_KEY=your_openai_api_key_here
+
+# Ollama (local, no API key needed)
+# OLLAMA_MODEL=llama3.1
+# OLLAMA_BASE_URL=http://localhost:11434
 ```
 
 Get your keys:
+- Groq: https://console.groq.com/keys (free tier)
 - Gemini: https://aistudio.google.com/app/apikey
-- Groq: https://console.groq.com/keys
+- OpenAI: https://platform.openai.com/api-keys
+- Ollama: https://ollama.ai (local, no key needed)
+
+Or override per-command: `codedoc-ai generate file.py --provider openai`
 
 ---
 

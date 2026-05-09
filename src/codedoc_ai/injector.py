@@ -19,7 +19,7 @@ from rich.console import Console
 from rich.syntax import Syntax
 
 from .models.schemas import FunctionSchema
-from .providers.groq import generate_doc
+from .providers.factory import get_provider
 from .router import detect_and_parse, detect_lang
 
 _console = Console(stderr=True)
@@ -231,6 +231,7 @@ def inject_docstrings(
     dry_run: bool = False,
     backup: bool = False,
     out_dir: Optional[Path] = None,
+    provider_name: Optional[str] = None,
 ) -> dict:
     """
     Parse a source file, generate docstrings via LLM, and inject them.
@@ -287,7 +288,8 @@ def inject_docstrings(
 
         # Generate docstring via LLM
         _console.print(f"  [cyan]✨ Generating docstring for {func.name}…[/cyan]")
-        raw_doc = generate_doc(func)
+        provider = get_provider(provider_name)
+        raw_doc = provider.generate_doc(func)
         if not raw_doc:
             _console.print(f"  [yellow]⚠ LLM returned empty for {func.name}[/yellow]")
             skipped += 1
