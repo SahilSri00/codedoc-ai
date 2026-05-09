@@ -1,11 +1,12 @@
 import typer
 from pathlib import Path
 from rich.console import Console
-from codedoc_ai.router import detect_and_parse , detect_lang
+from codedoc_ai.router import detect_and_parse, detect_lang
 from codedoc_ai.generator import generate as generate_docs
 from codedoc_ai.search import query as search_query
 from codedoc_ai.indexer import build_index
 from codedoc_ai.injector import inject_docstrings
+from codedoc_ai.tracker import filter_changed_files, mark_processed
 
 console = Console(stderr=True)
 app = typer.Typer()
@@ -47,6 +48,8 @@ def parse(file: Path):
 def generate(
     file: Path,
     out: Path = typer.Option(Path("docs/generated"), "--out", help="Output directory for docs"),
+    changed_only: bool = typer.Option(False, "--changed-only", help="Only process files that changed since last run"),
+    git_diff: bool = typer.Option(False, "--git-diff", help="Use git diff to detect changes (instead of hash manifest)"),
 ):
     """Generate hybrid LLM docs (Gemini deep, Groq summary)."""
     file = file.resolve()
@@ -58,6 +61,20 @@ def generate(
     else:
         paths = [file]
 
+    # Filter unchanged files
+    if changed_only or git_diff:
+        original_count = len(paths)
+        paths = filter_changed_files(
+            paths, command="generate", git_diff=git_diff,
+            repo_root=file if file.is_dir() else file.parent,
+        )
+        skipped = original_count - len(paths)
+        if skipped > 0:
+            console.print(f"[dim]⏭ Skipped {skipped} unchanged file(s)[/dim]")
+        if not paths:
+            console.print("[green]✅ All files up to date — nothing to generate.[/green]")
+            return
+
     for path in paths:
         try:
             lang = detect_lang(path)
@@ -68,10 +85,10 @@ def generate(
             md_path = out / f"{path.stem}.md"
             with open(md_path, "w", encoding="utf-8") as md_file:
                 md_file.write(result["summary"])
+            mark_processed(path, command="generate")
             console.print(f"[green]✅ Docs saved to {md_path}[/green]")
         except Exception as e:
             console.print(f"[red]Error processing {path}[/red]: {e}")
-
 
 
 # --------------------------------
@@ -99,6 +116,8 @@ def index(
         None,
         help="Language (auto-detected if omitted; choices: py,js,cpp,go,rust,java)",
     ),
+    changed_only: bool = typer.Option(False, "--changed-only", help="Only index files that changed since last run"),
+    git_diff: bool = typer.Option(False, "--git-diff", help="Use git diff to detect changes"),
 ):
     """Build Chroma vector index for any supported language."""
     repo_root = repo_root.resolve()
@@ -123,7 +142,26 @@ def index(
         raise typer.Exit(1)
     normalized = LANG_ALIASES[key]
 
-    build_index(repo_root, lang=normalized)
+    if changed_only or git_diff:
+        # Pre-filter files before passing to indexer
+        all_files = list(repo_root.glob(f"**/*.{normalized}"))
+        original_count = len(all_files)
+        changed_files = filter_changed_files(
+            all_files, command="index", git_diff=git_diff, repo_root=repo_root,
+        )
+        skipped = original_count - len(changed_files)
+        if skipped > 0:
+            console.print(f"[dim]⏭ Skipped {skipped} unchanged file(s)[/dim]")
+        if not changed_files:
+            console.print("[green]✅ Index is up to date — nothing to re-index.[/green]")
+            return
+        # Mark changed files as processed after indexing
+        build_index(repo_root, lang=normalized)
+        for f in changed_files:
+            mark_processed(f, command="index")
+    else:
+        build_index(repo_root, lang=normalized)
+
     console.print(f"[green]✅ Indexed .{normalized} files in {repo_root}[/green]")
 
 # --------------------------------
@@ -136,6 +174,8 @@ def inject(
     dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without writing"),
     backup: bool = typer.Option(False, "--backup", help="Create .bak copy before modifying"),
     out: Path = typer.Option(None, "--out", help="Write documented copy to this directory (original untouched)"),
+    changed_only: bool = typer.Option(False, "--changed-only", help="Only process files that changed since last run"),
+    git_diff: bool = typer.Option(False, "--git-diff", help="Use git diff to detect changes"),
 ):
     """Inject AI-generated docstrings directly into source files."""
     file = file.resolve()
@@ -149,6 +189,20 @@ def inject(
         paths = [p for p in file.rglob("*") if p.is_file()]
     else:
         paths = [file]
+
+    # Filter unchanged files
+    if changed_only or git_diff:
+        original_count = len(paths)
+        paths = filter_changed_files(
+            paths, command="inject", git_diff=git_diff,
+            repo_root=file if file.is_dir() else file.parent,
+        )
+        skipped_unchanged = original_count - len(paths)
+        if skipped_unchanged > 0:
+            console.print(f"[dim]⏭ Skipped {skipped_unchanged} unchanged file(s)[/dim]")
+        if not paths:
+            console.print("[green]✅ All files up to date — nothing to inject.[/green]")
+            return
 
     total_injected = 0
     total_skipped = 0
@@ -171,6 +225,7 @@ def inject(
             total_skipped += result["skipped"]
 
             if not dry_run:
+                mark_processed(path, command="inject")
                 mode = f"→ {result['file']}" if out else "(in-place)"
                 console.print(f"  [green]✅ {result['injected']} injected, {result['skipped']} skipped {mode}[/green]")
 

@@ -180,17 +180,38 @@ Returns the top 3 matching functions with file path, line numbers, and similarit
 
 ---
 
+### Diff-Aware Mode (All Commands)
+
+All commands that process files (`generate`, `inject`, `index`) support diff-aware mode to skip unchanged files:
+
+```bash
+# Hash-based: skip files unchanged since last run (works everywhere)
+codedoc-ai generate src/ --changed-only
+codedoc-ai inject src/ --changed-only
+codedoc-ai index . --changed-only
+
+# Git-based: only process files changed in git
+codedoc-ai generate src/ --git-diff
+codedoc-ai inject src/ --git-diff
+```
+
+File hashes are stored in `.codedoc-ai/manifest.json`. On large repos, this saves significant time and LLM API calls.
+
+---
+
 ## Project Structure
 
 ```
 src/codedoc_ai/
-├── main.py          ← Typer CLI entry-point
+├── main.py          ← Typer CLI entry-point (6 commands)
 ├── router.py        ← Language detection + parser dispatch
 ├── generator.py     ← Orchestrates the hybrid LLM pipeline
+├── injector.py      ← Docstring injection engine (in-place + copy)
+├── tracker.py       ← Diff-aware file change tracking (hash + git)
 ├── parser/          ← Per-language AST parsers (tree-sitter + stdlib ast)
 ├── providers/
 │   ├── gemini.py    ← Gemini 2.0 Flash — per-function docstrings
-│   └── groq.py      ← Groq Llama 3.1 — file-level summaries
+│   └── groq.py      ← Groq Llama 3.1 — file-level summaries + docstrings
 ├── embedder/        ← sentence-transformers (all-MiniLM-L6-v2)
 ├── indexer/         ← ChromaDB index builder
 ├── search/          ← Semantic vector search
