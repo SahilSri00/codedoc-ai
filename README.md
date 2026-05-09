@@ -97,6 +97,60 @@ Output format per file:
 
 ---
 
+### `inject` — Inject docstrings into source code
+
+The killer feature. Generates AI-powered docstrings and writes them **directly into your source files** using the correct comment syntax for each language.
+
+```bash
+# Preview what would change (no files modified)
+codedoc-ai inject path/to/file.java --dry-run
+
+# Inject into the original file
+codedoc-ai inject path/to/file.java
+
+# Create a documented copy (original untouched)
+codedoc-ai inject path/to/file.java --out docs/injected/
+
+# Replace existing docstrings with fresh ones
+codedoc-ai inject path/to/file.java --replace
+
+# Create a backup before modifying
+codedoc-ai inject path/to/file.java --backup
+
+# Process an entire directory
+codedoc-ai inject src/ --out docs/injected/
+```
+
+**Before:**
+```java
+public class Demo1 {
+    public int add(int a, int b, int c) {
+        return a + b - c;
+    }
+}
+```
+
+**After:**
+```java
+public class Demo1 {
+    /**
+     * Adds three integers together, subtracting the third from the sum.
+     *
+     * @param a The first integer to add.
+     * @param b The second integer to add.
+     * @param c The integer to subtract from the sum.
+     * @return The result of (a + b - c).
+     */
+    public int add(int a, int b, int c) {
+        return a + b - c;
+    }
+}
+```
+
+Language-specific formats: Python `"""..."""`, Java/JS `/** */`, Go `//`, Rust `///`, C++ `/** */`.
+
+---
+
 ### `index` — Build the vector search index
 
 Embed every function in a repo and store it in ChromaDB for semantic search.

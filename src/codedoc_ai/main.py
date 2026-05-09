@@ -5,6 +5,7 @@ from codedoc_ai.router import detect_and_parse , detect_lang
 from codedoc_ai.generator import generate as generate_docs
 from codedoc_ai.search import query as search_query
 from codedoc_ai.indexer import build_index
+from codedoc_ai.injector import inject_docstrings
 
 console = Console(stderr=True)
 app = typer.Typer()
@@ -124,6 +125,59 @@ def index(
 
     build_index(repo_root, lang=normalized)
     console.print(f"[green]✅ Indexed .{normalized} files in {repo_root}[/green]")
+
+# --------------------------------
+# CLI 5 : inject docstrings
+# --------------------------------
+@app.command()
+def inject(
+    file: Path,
+    replace: bool = typer.Option(False, "--replace", help="Overwrite existing docstrings"),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without writing"),
+    backup: bool = typer.Option(False, "--backup", help="Create .bak copy before modifying"),
+    out: Path = typer.Option(None, "--out", help="Write documented copy to this directory (original untouched)"),
+):
+    """Inject AI-generated docstrings directly into source files."""
+    file = file.resolve()
+
+    if not file.exists():
+        console.print("[red]File or directory not found[/red]")
+        raise typer.Exit(1)
+
+    # Collect files to process
+    if file.is_dir():
+        paths = [p for p in file.rglob("*") if p.is_file()]
+    else:
+        paths = [file]
+
+    total_injected = 0
+    total_skipped = 0
+
+    for path in paths:
+        try:
+            lang = detect_lang(path)
+            if lang == "unknown":
+                continue
+
+            console.print(f"\n[bold]📄 {path.name}[/bold]")
+            result = inject_docstrings(
+                path,
+                replace=replace,
+                dry_run=dry_run,
+                backup=backup,
+                out_dir=out,
+            )
+            total_injected += result["injected"]
+            total_skipped += result["skipped"]
+
+            if not dry_run:
+                mode = f"→ {result['file']}" if out else "(in-place)"
+                console.print(f"  [green]✅ {result['injected']} injected, {result['skipped']} skipped {mode}[/green]")
+
+        except Exception as e:
+            console.print(f"  [red]Error: {e}[/red]")
+
+    console.print(f"\n[bold green]Done![/bold green] {total_injected} docstrings injected, {total_skipped} skipped.")
 
 # --------------------------------
 # Entry-point
