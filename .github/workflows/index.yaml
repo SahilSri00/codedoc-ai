@@ -59,7 +59,7 @@ jobs:
       # 3. Run tests
       # --------------------------------------------------
       - name: Run tests
-        run: poetry run pytest tests --maxfail=1 --disable-warnings -v
+        run: poetry run python -m pytest tests --maxfail=1 --disable-warnings -v
 
       # --------------------------------------------------
       # 4. Detect changed source files (diff-aware)

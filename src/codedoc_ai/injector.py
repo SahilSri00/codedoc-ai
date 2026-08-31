@@ -11,7 +11,9 @@ functions that haven't been processed yet.
 """
 from __future__ import annotations
 
+import os
 import shutil
+import tempfile
 from pathlib import Path
 from typing import List, Optional, Tuple
 
@@ -21,6 +23,7 @@ from rich.syntax import Syntax
 from .models.schemas import FunctionSchema
 from .providers.factory import get_provider
 from .router import detect_and_parse, detect_lang
+from .safety import validate_modification
 
 _console = Console(stderr=True)
 
@@ -229,22 +232,29 @@ def inject_docstrings(
     *,
     replace: bool = False,
     dry_run: bool = False,
-    backup: bool = False,
+    backup: bool = True,
     out_dir: Optional[Path] = None,
     provider_name: Optional[str] = None,
 ) -> dict:
     """
     Parse a source file, generate docstrings via LLM, and inject them.
 
+    The write is **fail-closed**: the proposed result is validated in memory
+    (must still parse; must have the same number of functions as the original)
+    before anything touches disk, and the real write is atomic (temp file +
+    ``os.replace``) so an interrupted run can never leave a half-written file.
+
     Args:
         file_path: Path to the source file.
         replace: If True, overwrite existing docstrings. Default: skip documented funcs.
         dry_run: If True, print a diff preview without writing.
-        backup: If True, create a .bak copy before modifying.
+        backup: If True (default), create a .bak copy before modifying in place.
         out_dir: If set, write the documented copy here instead of modifying in-place.
 
     Returns:
-        dict with keys: "injected" (count), "skipped" (count), "file" (output path).
+        dict with keys: "injected" (count), "skipped" (count), "file" (output
+        path), "aborted" (bool — True if the write was refused for safety), and
+        "reason" (str, present only when aborted).
     """
     file_path = Path(file_path).resolve()
     lang = detect_lang(file_path)
@@ -256,10 +266,24 @@ def inject_docstrings(
     functions = detect_and_parse(file_path)
     if not functions:
         _console.print(f"[yellow]No functions found in {file_path.name}[/yellow]")
-        return {"injected": 0, "skipped": 0, "file": str(file_path)}
+        return {"injected": 0, "skipped": 0, "file": str(file_path), "aborted": False}
 
-    # Read file
-    original_text = file_path.read_text(encoding="utf-8", errors="ignore")
+    original_func_count = len(functions)
+
+    # Read file with strict UTF-8 and NO newline translation, so CRLF/LF are
+    # preserved exactly. A non-UTF-8 file is refused rather than mangled.
+    # (open(newline="") works on all 3.x; Path.read_text gained newline in 3.13.)
+    try:
+        with open(file_path, "r", encoding="utf-8", newline="") as handle:
+            original_text = handle.read()
+    except UnicodeDecodeError as exc:
+        reason = f"file is not valid UTF-8 ({exc})"
+        _console.print(f"  [red]✗ Refusing to modify {file_path.name}: {reason}[/red]")
+        return {"injected": 0, "skipped": 0, "file": str(file_path),
+                "aborted": True, "reason": reason}
+
+    # Preserve the file's dominant line ending for any lines we insert.
+    newline = "\r\n" if "\r\n" in original_text else "\n"
     lines = original_text.splitlines(keepends=True)
 
     # Sort functions bottom-up so insertions don't shift later line numbers
@@ -281,8 +305,8 @@ def inject_docstrings(
         # If replacing, remove the old doc block first
         if has_doc and replace:
             lines_no_endings, removed = _remove_existing_doc(lines_no_endings, func.start_line, lang)
-            # Rebuild lines with line endings
-            lines = [l + "\n" for l in lines_no_endings]
+            # Rebuild lines with the file's own line ending
+            lines = [l + newline for l in lines_no_endings]
             # Adjust this function's start_line
             func.start_line -= removed
 
@@ -305,32 +329,86 @@ def inject_docstrings(
 
         # Insert above the function definition
         insert_idx = func.start_line - 1  # 0-indexed
-        insert_lines = [l + "\n" for l in formatted.splitlines()]
+        insert_lines = [l + newline for l in formatted.splitlines()]
         lines = lines[:insert_idx] + insert_lines + lines[insert_idx:]
         injected += 1
 
     # Build the final output
     result_text = "".join(lines)
 
+    # Nothing actually changed (everything skipped) — never touch the file.
+    if result_text == original_text:
+        if dry_run:
+            _console.print("[dim]No changes.[/dim]")
+        return {"injected": injected, "skipped": skipped, "file": str(file_path),
+                "aborted": False}
+
+    # ---- Fail-closed gate: validate BEFORE any write ----
+    ok, reason = validate_modification(
+        original_text, result_text, lang, file_path.suffix, original_func_count
+    )
+    if not ok:
+        _console.print(
+            f"  [red]✗ Refusing to write {file_path.name}: {reason}[/red]"
+        )
+        _console.print("  [red]  Original file left unchanged.[/red]")
+        return {"injected": 0, "skipped": skipped, "file": str(file_path),
+                "aborted": True, "reason": reason}
+
     if dry_run:
         _console.print(f"\n[bold]── Dry-run preview for {file_path.name} ──[/bold]\n")
         _show_diff(original_text, result_text, file_path.name, lang)
-        return {"injected": injected, "skipped": skipped, "file": str(file_path)}
+        return {"injected": injected, "skipped": skipped, "file": str(file_path),
+                "aborted": False}
 
     # Determine output path
     if out_dir:
         out_dir = Path(out_dir).resolve()
         out_dir.mkdir(parents=True, exist_ok=True)
         out_path = out_dir / file_path.name
+        make_backup = False  # writing a fresh copy; nothing to back up
     else:
         out_path = file_path
-        if backup:
-            bak_path = file_path.with_suffix(file_path.suffix + ".bak")
-            shutil.copy2(file_path, bak_path)
-            _console.print(f"  [dim]📋 Backup saved to {bak_path.name}[/dim]")
+        make_backup = backup
 
-    out_path.write_text(result_text, encoding="utf-8")
-    return {"injected": injected, "skipped": skipped, "file": str(out_path)}
+    _atomic_write(out_path, result_text, backup=make_backup)
+    return {"injected": injected, "skipped": skipped, "file": str(out_path),
+            "aborted": False}
+
+
+def _atomic_write(target: Path, text: str, *, backup: bool) -> None:
+    """
+    Write *text* to *target* atomically.
+
+    The content is written to a temporary file in the same directory and then
+    moved into place with ``os.replace`` (atomic on both POSIX and Windows), so
+    an interrupted write can never leave a truncated or half-written source
+    file. The temp file is written with ``newline=""`` so the exact bytes of
+    *text* (including any CRLF endings) are preserved.
+
+    If *backup* is True and *target* already exists, a ``.bak`` copy is made
+    before the replace.
+    """
+    target = Path(target)
+    tmp_fd, tmp_name = tempfile.mkstemp(
+        dir=str(target.parent), prefix=target.name + ".", suffix=".tmp"
+    )
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8", newline="") as handle:
+            handle.write(text)
+        if backup and target.exists():
+            bak_path = target.with_suffix(target.suffix + ".bak")
+            shutil.copy2(target, bak_path)
+            _console.print(f"  [dim]📋 Backup saved to {bak_path.name}[/dim]")
+        os.replace(tmp_name, target)
+    except Exception:
+        # The replace never happened; remove the orphaned temp file.
+        if os.path.exists(tmp_name):
+            try:
+                os.unlink(tmp_name)
+            except OSError:
+                pass
+        raise
 
 
 # ---------------------------------------------------------------------------

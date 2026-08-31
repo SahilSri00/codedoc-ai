@@ -1,28 +1,33 @@
 # codedoc-ai
 
-> **AI-powered code documentation for any codebase — using a hybrid Gemini + Groq pipeline.**
+> **AI-powered docstring generation and injection for multiple languages, backed by a single pluggable LLM provider (Groq, Gemini, OpenAI, or Ollama).**
 
-`codedoc-ai` is a CLI tool that reads your source files, parses every function and class with language-specific ASTs, and generates rich, professional documentation using two complementary LLMs:
+`codedoc-ai` is a CLI tool that parses your source files with language-specific parsers (Python's built-in `ast` and Tree-sitter grammars), extracts each function/method, and uses an LLM to generate documentation. It can print structured metadata, produce standalone Markdown docs, and **safely** inject doc comments back into your source files.
 
-| Model | Provider | Role |
-|---|---|---|
-| **Gemini 2.0 Flash** | Google | Per-function Google-style docstrings (precise, typed) |
-| **Llama 3.1 8B Instant** | Groq | High-level file summaries (fast, conversational) |
+You choose **one** provider at a time (default: Groq / Llama 3.1 8B Instant) via `CODEDOC_PROVIDER` in `.env` or `--provider` per command. The same provider generates both the per-function docstrings and the file summary.
 
-Combine the two and you get documentation that is both **technically accurate** and **human readable** — without the cost and latency of a single heavyweight model doing everything.
+### Scope
+
+CodeDoc-AI is a **documentation generator**, not a code analyzer, linter, or type checker. It extracts functions/methods, generates natural-language docs with one configurable LLM, and can inject them back into source safely. It does **not** evaluate documentation quality, verify the factual accuracy of generated text, or route between multiple models. See [Known limitations](#known-limitations).
 
 ---
 
 ## Supported Languages
 
-| Language | Extension(s) |
-|---|---|
-| Python | `.py` |
-| JavaScript / TypeScript | `.js`, `.ts`, `.mjs`, `.tsx` |
-| Java | `.java` |
-| Go | `.go` |
-| Rust | `.rs` |
-| C / C++ | `.cpp`, `.cc`, `.h`, `.hpp` |
+Function extraction (the `parse` command) is smoke-tested for all of the
+languages below. "Injection test coverage" means an automated round-trip test
+in `tests/` exercises `inject` end to end for that language:
+
+| Language | Extension(s) | Parser | Injection test coverage |
+|---|---|---|---|
+| Python | `.py` | stdlib `ast` | ✅ golden round-trip test |
+| Rust | `.rs` | Tree-sitter | ✅ golden round-trip test |
+| Java | `.java` | Tree-sitter | ⚠️ safety-gated, no golden test yet |
+| JavaScript / TypeScript | `.js`, `.ts`, `.mjs`, `.tsx` | Tree-sitter | ⚠️ safety-gated, no golden test yet |
+| Go | `.go` | Tree-sitter | ⚠️ safety-gated, no golden test yet |
+| C / C++ | `.cpp`, `.cc`, `.h`, `.hpp` | Tree-sitter | ⚠️ safety-gated, no golden test yet |
+
+Regardless of language, injection is **fail-closed** — see [Injection safety](#injection-safety).
 
 ---
 
@@ -84,7 +89,8 @@ Prints JSON for each function: name, args, return type, docstring, source lines.
 
 ### `generate` — Generate documentation
 
-Run the hybrid LLM pipeline and save Markdown docs.
+Generate Markdown docs with the configured provider: a docstring for every
+function plus a high-level file summary, merged into one document.
 
 ```bash
 # Single file
@@ -94,39 +100,43 @@ codedoc-ai generate path/to/file.py
 codedoc-ai generate src/ --out docs/generated
 ```
 
-Output format per file:
-```
-## Overview          ← Groq (Llama 3.1): readable file summary
-## Key Components    ← Groq: bullet list of functions
-## Data Flow         ← Groq: how data moves through the file
----
-### `function_name`  ← Gemini: Google-style docstring per function
-```
+Each source file produces one Markdown file: the file summary first, then a
+`## Function Documentation` section with one entry per function. Every section
+is produced by the single configured provider (there is no per-section model
+routing).
 
 ---
 
 ### `inject` — Inject docstrings into source code
 
-The killer feature. Generates AI-powered docstrings and writes them **directly into your source files** using the correct comment syntax for each language.
+Generates doc comments and writes them **into your source files** using each
+language's native comment syntax.
+
+**Safe by default:** `inject` runs as a **dry-run preview** unless you pass
+`--write`. Every write is validated before it touches disk (the result must
+still parse and must contain the same number of functions), the write is
+atomic, and a `.bak` backup is kept unless you pass `--no-backup`. If
+validation fails, the file is left untouched. See
+[Injection safety](#injection-safety).
 
 ```bash
-# Preview what would change (no files modified)
-codedoc-ai inject path/to/file.java --dry-run
-
-# Inject into the original file
+# Preview changes (default — nothing is written)
 codedoc-ai inject path/to/file.java
 
-# Create a documented copy (original untouched)
-codedoc-ai inject path/to/file.java --out docs/injected/
+# Actually write the changes (atomic; keeps a .bak backup)
+codedoc-ai inject path/to/file.java --write
+
+# Write without creating a .bak backup
+codedoc-ai inject path/to/file.java --write --no-backup
+
+# Write a documented copy elsewhere (original untouched)
+codedoc-ai inject path/to/file.java --write --out docs/injected/
 
 # Replace existing docstrings with fresh ones
-codedoc-ai inject path/to/file.java --replace
-
-# Create a backup before modifying
-codedoc-ai inject path/to/file.java --backup
+codedoc-ai inject path/to/file.java --write --replace
 
 # Process an entire directory
-codedoc-ai inject src/ --out docs/injected/
+codedoc-ai inject src/ --write --out docs/injected/
 ```
 
 **Before:**
@@ -156,6 +166,17 @@ public class Demo1 {
 ```
 
 Language-specific formats: Python `"""..."""`, Java/JS `/** */`, Go `//`, Rust `///`, C++ `/** */`.
+
+#### Injection safety
+
+`inject` is **fail-closed**. Before writing any file it:
+
+1. **Parses the proposed result** (Python via `ast`, other languages via Tree-sitter) and refuses to write if it no longer parses.
+2. **Checks a structural invariant** — the number of functions must be unchanged, so documentation can never add or delete code.
+3. **Writes atomically** via a temp file + `os.replace`, so an interrupted run can't leave a half-written file.
+4. **Preserves encoding and line endings** (strict UTF-8; CRLF/LF kept as-is) and keeps a `.bak` backup unless `--no-backup` is passed.
+
+If any check fails, the run is reported as *aborted* and the original file is left byte-for-byte unchanged. This behaviour is covered by automated tests in [`tests/test_injector_safety.py`](tests/test_injector_safety.py).
 
 ---
 
@@ -211,15 +232,20 @@ File hashes are stored in `.codedoc-ai/manifest.json`. On large repos, this save
 
 ```
 src/codedoc_ai/
-├── main.py          ← Typer CLI entry-point (6 commands)
+├── main.py          ← Typer CLI entry-point (5 commands)
 ├── router.py        ← Language detection + parser dispatch
-├── generator.py     ← Orchestrates the hybrid LLM pipeline
+├── generator.py     ← Orchestrates the LLM doc pipeline (single provider)
 ├── injector.py      ← Docstring injection engine (in-place + copy)
+├── safety.py        ← Fail-closed validation for the injector
 ├── tracker.py       ← Diff-aware file change tracking (hash + git)
-├── parser/          ← Per-language AST parsers (tree-sitter + stdlib ast)
+├── parser/          ← Per-language parsers (Tree-sitter + stdlib ast)
 ├── providers/
-│   ├── gemini.py    ← Gemini 2.0 Flash — per-function docstrings
-│   └── groq.py      ← Groq Llama 3.1 — file-level summaries + docstrings
+│   ├── base.py            ← LLMProvider abstract base
+│   ├── factory.py         ← Provider selection (env / --provider)
+│   ├── groq.py            ← Groq (Llama 3.1) — default
+│   ├── gemini_provider.py ← Google Gemini
+│   ├── openai_provider.py ← OpenAI
+│   └── ollama_provider.py ← Ollama (local)
 ├── embedder/        ← sentence-transformers (all-MiniLM-L6-v2)
 ├── indexer/         ← ChromaDB index builder
 ├── search/          ← Semantic vector search
@@ -237,6 +263,36 @@ lang : function_name : file_path : start_line : start_col
 ```
 
 The same function always produces the same ID — re-indexing is safe and idempotent.
+
+---
+
+## Testing
+
+```bash
+poetry run python -m pytest tests -v
+```
+
+Tests are fully **offline and deterministic** — the LLM provider is replaced
+with a fake, so no API keys or network access are required. The suite covers
+the injector's safety guarantees and Python/Rust round-trip injection, and CI
+runs it on every push and pull request.
+
+---
+
+## Known limitations
+
+- **Python docstring placement:** injected docs are placed *above* the `def`
+  line, so in Python they read as a comment / module-level string rather than a
+  `__doc__` docstring inside the function body. (Doc comments above the
+  declaration are the idiomatic form for Java, JS, Go, Rust, and C++.)
+- **Decorated / async Python functions:** the Python parser handles `def` only
+  (not `async def`), and for a decorated function the injector would place the
+  block between the decorator and the `def` — which breaks syntax, so the
+  safety gate **aborts** and leaves the file unchanged rather than documenting it.
+- **Generation quality is not evaluated:** there is no automated check that the
+  generated text is accurate or complete; output reflects whatever the chosen
+  LLM returns.
+- **One provider at a time:** there is no multi-model routing.
 
 ---
 

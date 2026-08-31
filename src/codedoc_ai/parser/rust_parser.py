@@ -98,7 +98,7 @@ def _parse_function_node(node: Node, file_path: Path, lang: str) -> FunctionSche
     return FunctionSchema(
         id=func_id,
         name=function_name,
-        source_code=None,            # Could be extracted if needed
+        source_code=_text(node),     # full function text; required by FunctionSchema
         file_path=str(file_path),
         docstring=_extract_doc(node),
         args=_extract_args(params_node),

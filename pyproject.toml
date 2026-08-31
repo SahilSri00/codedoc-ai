@@ -1,7 +1,7 @@
 [project]
 name = "codedoc-ai"
 version = "0.1.0"
-description = ""
+description = "AI-powered docstring generation and injection for multiple languages, backed by a single pluggable LLM provider (Groq, Gemini, OpenAI, or Ollama)."
 authors = [
     {name = "SahilSri00",email = "sknsrivastavainfinix+gh@gmail.com"}
 ]
@@ -27,8 +27,11 @@ dependencies = [
     "tree-sitter-languages (>=1.10.2,<2.0.0)",
 ]
 
-[tool.poetry.scripts]
+[project.scripts]
 codedoc-ai = "codedoc_ai.main:app"
+
+[tool.poetry]
+packages = [{ include = "codedoc_ai", from = "src" }]
 
 
 
@@ -36,3 +39,7 @@ codedoc-ai = "codedoc_ai.main:app"
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]
 build-backend = "poetry.core.masonry.api"
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]

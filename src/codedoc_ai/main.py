@@ -53,7 +53,7 @@ def generate(
     git_diff: bool = typer.Option(False, "--git-diff", help="Use git diff to detect changes (instead of hash manifest)"),
     provider: str = typer.Option(None, "--provider", help=f"LLM provider ({', '.join(SUPPORTED_PROVIDERS)})"),
 ):
-    """Generate hybrid LLM docs (Gemini deep, Groq summary)."""
+    """Generate Markdown docs (per-function docstrings + a file summary) using the configured LLM provider."""
     file = file.resolve()
     out = out.resolve()
     out.mkdir(parents=True, exist_ok=True)
@@ -173,19 +173,28 @@ def index(
 def inject(
     file: Path,
     replace: bool = typer.Option(False, "--replace", help="Overwrite existing docstrings"),
-    dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without writing"),
-    backup: bool = typer.Option(False, "--backup", help="Create .bak copy before modifying"),
+    write: bool = typer.Option(False, "--write", help="Actually modify files. Without this, inject only previews changes (dry-run)."),
+    dry_run: bool = typer.Option(False, "--dry-run", help="Preview changes without writing (this is the default)"),
+    backup: bool = typer.Option(True, "--backup/--no-backup", help="Create a .bak copy before modifying in place (default: on)"),
     out: Path = typer.Option(None, "--out", help="Write documented copy to this directory (original untouched)"),
     changed_only: bool = typer.Option(False, "--changed-only", help="Only process files that changed since last run"),
     git_diff: bool = typer.Option(False, "--git-diff", help="Use git diff to detect changes"),
     provider: str = typer.Option(None, "--provider", help=f"LLM provider ({', '.join(SUPPORTED_PROVIDERS)})"),
 ):
-    """Inject AI-generated docstrings directly into source files."""
+    """Inject AI-generated docstrings into source files.
+
+    Safe by default: previews changes unless you pass --write. Every write is
+    validated (the result must still parse and keep the same function count) and
+    performed atomically; a .bak backup is kept unless you pass --no-backup.
+    """
     file = file.resolve()
 
     if not file.exists():
         console.print("[red]File or directory not found[/red]")
         raise typer.Exit(1)
+
+    # Preview unless the user explicitly opts into writing. --dry-run forces preview.
+    effective_dry_run = dry_run or (not write)
 
     # Collect files to process
     if file.is_dir():
@@ -209,6 +218,7 @@ def inject(
 
     total_injected = 0
     total_skipped = 0
+    total_aborted = 0
 
     for path in paths:
         try:
@@ -220,7 +230,7 @@ def inject(
             result = inject_docstrings(
                 path,
                 replace=replace,
-                dry_run=dry_run,
+                dry_run=effective_dry_run,
                 backup=backup,
                 out_dir=out,
                 provider_name=provider,
@@ -228,7 +238,12 @@ def inject(
             total_injected += result["injected"]
             total_skipped += result["skipped"]
 
-            if not dry_run:
+            if result.get("aborted"):
+                total_aborted += 1
+                console.print(f"  [red]⛔ Aborted (file unchanged): {result.get('reason', 'validation failed')}[/red]")
+                continue
+
+            if not effective_dry_run:
                 mark_processed(path, command="inject")
                 mode = f"→ {result['file']}" if out else "(in-place)"
                 console.print(f"  [green]✅ {result['injected']} injected, {result['skipped']} skipped {mode}[/green]")
@@ -236,7 +251,9 @@ def inject(
         except Exception as e:
             console.print(f"  [red]Error: {e}[/red]")
 
-    console.print(f"\n[bold green]Done![/bold green] {total_injected} docstrings injected, {total_skipped} skipped.")
+    console.print(f"\n[bold green]Done![/bold green] {total_injected} docstrings injected, {total_skipped} skipped, {total_aborted} aborted.")
+    if effective_dry_run:
+        console.print("[yellow]This was a preview. Re-run with [bold]--write[/bold] to modify files.[/yellow]")
 
 # --------------------------------
 # Entry-point

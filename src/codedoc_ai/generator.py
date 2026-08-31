@@ -1,9 +1,10 @@
 """
-generator.py — Orchestrates the hybrid LLM documentation pipeline.
+generator.py — Orchestrates the LLM documentation pipeline.
 
-Uses the provider factory to select the active LLM provider (Groq, Gemini,
-OpenAI, or Ollama). The provider is configured via ``CODEDOC_PROVIDER`` in
-.env or the ``--provider`` CLI flag.
+Uses the provider factory to select ONE active LLM provider (Groq, Gemini,
+OpenAI, or Ollama) which generates both the per-function docstrings and the
+file summary. The provider is configured via ``CODEDOC_PROVIDER`` in .env or
+the ``--provider`` CLI flag (default: groq).
 """
 from pathlib import Path
 from .providers.factory import get_provider
