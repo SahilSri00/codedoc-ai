@@ -1,6 +1,9 @@
 name: CodeDoc-AI — Auto-Document on Push
 
 on:
+  # Allow a manual run from the Actions tab (useful when a change touches only
+  # .github/**, which matches none of the paths filters below).
+  workflow_dispatch:
   push:
     branches: [main]
     paths:
