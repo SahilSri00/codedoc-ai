@@ -14,7 +14,7 @@ on:
       - "**/*.cpp"
 
 permissions:
-  contents: write
+  contents: read   # read-only: this workflow no longer pushes commits
 
 jobs:
   generate-and-commit:
@@ -99,30 +99,12 @@ jobs:
           done < relevant_files.txt
 
       # --------------------------------------------------
-      # 6. Commit & push generated docs back to main
-      # --------------------------------------------------
-      - name: Commit generated docs
-        if: steps.changed.outputs.has_changes == 'true'
-        run: |
-          git config user.name "github-actions[bot]"
-          git config user.email "github-actions[bot]@users.noreply.github.com"
-
-          git add docs/generated/
-
-          if git diff --staged --quiet; then
-            echo "✅ No documentation changes to commit"
-          else
-            CHANGED_LIST=$(cat relevant_files.txt | tr '\n' ', ' | sed 's/, $//')
-            git commit -m "📝 docs: auto-update for ${{ steps.changed.outputs.count }} file(s)
-
-            Files: $CHANGED_LIST
-            Triggered by: ${{ github.sha }}"
-            git push
-            echo "✅ Docs committed and pushed"
-          fi
-
-      # --------------------------------------------------
-      # 7. Upload as artifact too
+      # 6. Publish generated docs as a build artifact
+      #
+      # NOTE: docs/generated/ is intentionally gitignored, so the docs are
+      # published as a downloadable artifact rather than committed back to
+      # main. An earlier "git add docs/generated/" step could never succeed —
+      # git add exits 1 on an explicitly-ignored path.
       # --------------------------------------------------
       - name: Upload docs artifact
         if: steps.changed.outputs.has_changes == 'true'
@@ -133,7 +115,7 @@ jobs:
           retention-days: 90
 
       # --------------------------------------------------
-      # 8. Job summary
+      # 7. Job summary
       # --------------------------------------------------
       - name: Summary
         if: always()
