@@ -35,6 +35,14 @@ refuses every write — `inject` on typed TypeScript always aborts and leaves th
 file unchanged. This is pinned by a test, not just documented here. See
 [Known limitations](#known-limitations).
 
+**Function kinds covered:** extraction is not limited to free functions —
+class and instance methods (JS `method_definition`, including constructors and
+get/set accessors), Java constructors, Go methods with a receiver, and Python
+`async def` are all detected and documented. This is pinned by
+[`tests/test_parser_coverage.py`](tests/test_parser_coverage.py). See
+[Known limitations](#known-limitations) for how nested and decorated functions
+are handled.
+
 Regardless of language, injection is **fail-closed** — see [Injection safety](#injection-safety).
 
 ---
@@ -283,8 +291,9 @@ poetry run python -m pytest tests -v
 Tests are fully **offline and deterministic** — the LLM provider is replaced
 with a fake, so no API keys or network access are required. The suite covers the
 injector's safety guarantees and a round-trip injection test for every language
-with `✅` coverage in [Supported Languages](#supported-languages), plus a
-regression guard pinning the TypeScript abort. CI runs it on every push and
+with `✅` coverage in [Supported Languages](#supported-languages), a regression
+guard pinning the TypeScript abort, and parser-coverage tests pinning that
+methods, constructors and `async def` are detected. CI runs it on every push and
 pull request.
 
 ---
@@ -300,10 +309,18 @@ pull request.
   line, so in Python they read as a comment / module-level string rather than a
   `__doc__` docstring inside the function body. (Doc comments above the
   declaration are the idiomatic form for Java, JS, Go, Rust, and C++.)
-- **Decorated / async Python functions:** the Python parser handles `def` only
-  (not `async def`), and for a decorated function the injector would place the
-  block between the decorator and the `def` — which breaks syntax, so the
-  safety gate **aborts** and leaves the file unchanged rather than documenting it.
+- **Decorated Python functions:** the injector places the doc block *above* the
+  `def`, which for a decorated function lands between the decorator and the `def`
+  and breaks syntax — so the safety gate **aborts** and leaves the file
+  unchanged rather than documenting it. (`async def` is fully supported: it is
+  parsed and documented like a regular `def`.)
+- **Nested / inner functions are documented in place:** the parsers extract
+  every function at any depth, including closures and locally-defined helpers,
+  and the injector documents each one where it sits. The result still parses,
+  but a Python inner function's block is inserted as the first statement of the
+  *enclosing* function — so it becomes the enclosing function's docstring rather
+  than the inner one's. There is no option yet to restrict injection to
+  top-level or public functions.
 - **Generation quality is not evaluated:** there is no automated check that the
   generated text is accurate or complete; output reflects whatever the chosen
   LLM returns.

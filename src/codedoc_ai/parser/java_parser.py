@@ -89,8 +89,9 @@ def parse_file(file_path: Path, lang: str = "java") -> List[FunctionSchema]:
     functions: List[FunctionSchema] = []
 
     def walk(node: Node):
-        # Match Java method declarations
-        if node.type == "method_declaration":
+        # method_declaration = regular methods; constructor_declaration =
+        # constructors, which have a `name` and `parameters` but no return type.
+        if node.type in ("method_declaration", "constructor_declaration"):
             name_node = node.child_by_field_name("name")
             params_node = node.child_by_field_name("parameters")
             type_node = node.child_by_field_name("type")
@@ -126,7 +127,7 @@ def parse_file(file_path: Path, lang: str = "java") -> List[FunctionSchema]:
                 file_path=str(file_path),
                 docstring=docstring,
                 args=args,
-                return_type=_text(type_node),
+                return_type=_text(type_node) if type_node else None,
                 start_line=start_line,
                 end_line=end_line,
             ))

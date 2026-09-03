@@ -68,7 +68,7 @@ def _extract_doc(node: Node) -> Optional[str]:
 
 def _parse_function_node(node: Node, file_path: Path, lang: str) -> FunctionSchema:
     """
-    Converts a function_declaration node to FunctionSchema,
+    Converts a function_declaration or method_declaration node to FunctionSchema,
     including unique ID, source code, and metadata.
     """
     name_node = node.child_by_field_name("name")
@@ -120,7 +120,10 @@ def parse_file(file_path: Path, lang: str = "go") -> List[FunctionSchema]:
     functions: List[FunctionSchema] = []
 
     def walk(node: Node):
-        if node.type == "function_declaration":
+        # function_declaration = package-level `func Foo()`;
+        # method_declaration   = `func (r Recv) Foo()` — the receiver form that
+        # makes up most idiomatic Go. Both expose `name` and `parameters`.
+        if node.type in ("function_declaration", "method_declaration"):
             try:
                 functions.append(_parse_function_node(node, file_path, lang))
             except Exception as e:

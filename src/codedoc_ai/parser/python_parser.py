@@ -19,9 +19,9 @@ def parse_file(file_path: Path) -> List[FunctionSchema]:
         
         functions: List[FunctionSchema] = []
         
-        # Find all function definitions
+        # Find all function definitions (both `def` and `async def`)
         for node in ast.walk(tree):
-            if isinstance(node, ast.FunctionDef):
+            if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef)):
                 # Extract function name
                 function_name = node.name
                 

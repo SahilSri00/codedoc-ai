@@ -84,7 +84,14 @@ def parse_file(file_path: Path, lang: str = "js") -> List[FunctionSchema]:
     functions: List[FunctionSchema] = []
 
     def walk(node: Node):
-        if node.type in ("function_declaration", "function_expression", "arrow_function"):
+        # method_definition covers class methods, constructors and get/set
+        # accessors, none of which are function_declaration/expression nodes.
+        if node.type in (
+            "function_declaration",
+            "function_expression",
+            "arrow_function",
+            "method_definition",
+        ):
             # Extract basic metadata
             name_node = node.child_by_field_name("name")
             function_name = _text(name_node) or "<anonymous>"
