@@ -12,6 +12,7 @@ functions that haven't been processed yet.
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import tempfile
 from pathlib import Path
@@ -23,7 +24,7 @@ from rich.syntax import Syntax
 from .models.schemas import FunctionSchema
 from .providers.factory import get_provider
 from .router import detect_and_parse, detect_lang
-from .safety import validate_modification
+from .safety import syntax_ok, validate_modification
 
 _console = Console(stderr=True)
 
@@ -40,21 +41,71 @@ def _detect_indent(lines: List[str], start_line: int) -> str:
     return ""
 
 
-def _strip_llm_artifacts(raw: str) -> str:
-    """Remove markdown fences, stray triple-quotes, and leading/trailing junk."""
-    text = raw.strip()
-    # Remove wrapping ```...```
+#: Bare language tags a model may leave behind on their own line once the
+#: surrounding ``` fence has been stripped.
+_FENCE_LANGS = {
+    "python", "py", "java", "javascript", "js", "jsx", "typescript", "ts",
+    "tsx", "go", "golang", "rust", "rs", "cpp", "c++", "c", "text",
+    "plaintext", "markdown", "md", "docstring",
+}
+
+#: Inline chain-of-thought some reasoning models emit into the message body.
+_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL | re.IGNORECASE)
+
+
+def _peel_once(text: str) -> str:
+    """Strip one layer of fence / language tag / triple-quote wrapping."""
+    text = text.strip()
+
+    # ```lang ... ```  — drop the whole opening line so the language tag goes
+    # with it, rather than surviving as a stray "python" line in the output.
     if text.startswith("```"):
         first_nl = text.find("\n")
-        text = text[first_nl + 1 :] if first_nl != -1 else text[3:]
-    if text.endswith("```"):
-        text = text[:-3]
-    # Remove wrapping triple-quotes
-    text = text.strip()
-    if text.startswith('"""') and text.endswith('"""'):
-        text = text[3:-3].strip()
-    if text.startswith("'''") and text.endswith("'''"):
-        text = text[3:-3].strip()
+        text = text[first_nl + 1:] if first_nl != -1 else text[3:]
+        if text.rstrip().endswith("```"):
+            text = text.rstrip()[:-3]
+        text = text.strip()
+
+    # A language tag left on its own first line.
+    lines = text.splitlines()
+    if lines and lines[0].strip().lower() in _FENCE_LANGS:
+        text = "\n".join(lines[1:]).strip()
+
+    # Leading/trailing triple quotes. The leading one is removed even without a
+    # matching closer: real documentation never *starts* with `"""`, and a
+    # truncated response can easily lose its terminator.
+    for quote in ('"""', "'''"):
+        if text.startswith(quote):
+            text = text[3:]
+            if text.rstrip().endswith(quote):
+                text = text.rstrip()[:-3]
+            text = text.strip()
+
+    return text.strip()
+
+
+def _strip_llm_artifacts(raw: str) -> str:
+    """
+    Remove markdown fences, stray triple-quotes, and leading/trailing junk.
+
+    Providers sometimes wrap their output more than once (a fenced block that
+    then gets re-wrapped in triple quotes), so wrappers are peeled repeatedly
+    until the text stops changing. Whatever survives is documentation *prose* —
+    the caller adds the language's own comment syntax.
+    """
+    text = _THINK_RE.sub("", raw).strip()
+
+    for _ in range(4):  # bounded: guards against a pathological payload
+        peeled = _peel_once(text)
+        if peeled == text:
+            break
+        text = peeled
+
+    # Models end lines with two spaces (markdown's hard-break syntax). That has
+    # no meaning inside a comment block and just leaves trailing whitespace that
+    # linters flag, so drop it per line.
+    text = "\n".join(line.rstrip() for line in text.splitlines())
+
     return text.strip()
 
 
@@ -282,6 +333,20 @@ def inject_docstrings(
         return {"injected": 0, "skipped": 0, "file": str(file_path),
                 "aborted": True, "reason": reason}
 
+    # Fail fast: if the file does not parse *before* we touch it, the fail-closed
+    # gate is guaranteed to refuse the write later. Checking now means we don't
+    # spend LLM calls (real money, real latency) generating docstrings that can
+    # never be written. Verified: the read above happens before any provider call.
+    pre_ok, _ = syntax_ok(original_text, lang)
+    if not pre_ok:
+        reason = (
+            f"the file does not parse with the '{lang}' grammar, so no "
+            "modification could be verified as safe"
+        )
+        _console.print(f"  [red]✗ Skipping {file_path.name}: {reason}[/red]")
+        return {"injected": 0, "skipped": 0, "file": str(file_path),
+                "aborted": True, "reason": reason}
+
     # Preserve the file's dominant line ending for any lines we insert.
     newline = "\r\n" if "\r\n" in original_text else "\n"
     lines = original_text.splitlines(keepends=True)
@@ -324,6 +389,10 @@ def inject_docstrings(
         formatted = format_docstring(lang, raw_doc, indent)
 
         if not formatted:
+            _console.print(
+                f"  [yellow]⚠ Unusable response for {func.name} "
+                "(nothing left after stripping fences/quotes)[/yellow]"
+            )
             skipped += 1
             continue
 
@@ -351,7 +420,6 @@ def inject_docstrings(
         _console.print(
             f"  [red]✗ Refusing to write {file_path.name}: {reason}[/red]"
         )
-        _console.print("  [red]  Original file left unchanged.[/red]")
         return {"injected": 0, "skipped": skipped, "file": str(file_path),
                 "aborted": True, "reason": reason}
 

@@ -32,8 +32,9 @@ assert the function count is unchanged:
 (`tree-sitter-typescript` is not a dependency). Extraction and doc generation
 work, but the JS grammar cannot parse type annotations, so the safety gate
 refuses every write — `inject` on typed TypeScript always aborts and leaves the
-file unchanged. This is pinned by a test, not just documented here. See
-[Known limitations](#known-limitations).
+file unchanged. The refusal happens *before* any LLM call, so an unwritable file
+costs nothing in API spend. This is pinned by a test, not just documented here.
+See [Known limitations](#known-limitations).
 
 **Function kinds covered:** extraction is not limited to free functions —
 class and instance methods (JS `method_definition`, including constructors and
@@ -292,9 +293,10 @@ Tests are fully **offline and deterministic** — the LLM provider is replaced
 with a fake, so no API keys or network access are required. The suite covers the
 injector's safety guarantees and a round-trip injection test for every language
 with `✅` coverage in [Supported Languages](#supported-languages), a regression
-guard pinning the TypeScript abort, and parser-coverage tests pinning that
-methods, constructors and `async def` are detected. CI runs it on every push and
-pull request.
+guard pinning the TypeScript abort, parser-coverage tests pinning that methods,
+constructors and `async def` are detected, and tests pinning that raw LLM
+artifacts (markdown fences, stray triple-quotes, reasoning traces) never reach a
+source file. CI runs it on every push and pull request.
 
 ---
 
@@ -303,8 +305,13 @@ pull request.
 - **TypeScript injection never succeeds:** `.ts` / `.tsx` are parsed with the
   JavaScript grammar, which treats type annotations as a parse error. `parse`
   and `generate` work, but the fail-closed gate rejects every proposed write, so
-  `inject` always aborts with the file untouched. Supporting it properly means
-  adding the `tree-sitter-typescript` grammar and routing `.ts`/`.tsx` to it.
+  `inject` always aborts with the file untouched. Because a file that cannot be
+  parsed can never be written, `inject` detects this up front and skips it
+  without calling the LLM at all. Supporting it properly means adding the
+  `tree-sitter-typescript` grammar and routing `.ts`/`.tsx` to it.
+- **Long documentation lines are not wrapped:** generated text is emitted as the
+  model produced it, so a summary sentence can exceed 130 characters on one line
+  rather than wrapping at the ~80 columns conventional for Javadoc/JSDoc.
 - **Python docstring placement:** injected docs are placed *above* the `def`
   line, so in Python they read as a comment / module-level string rather than a
   `__doc__` docstring inside the function body. (Doc comments above the

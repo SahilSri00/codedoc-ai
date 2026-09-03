@@ -1,8 +1,9 @@
 """
 Groq provider for CodeDoc-AI.
 
-Implements the LLMProvider interface using Groq's API with Llama 3.1 8B Instant.
-Handles both per-function docstring generation and file-level summaries.
+Implements the LLMProvider interface using Groq's OpenAI-compatible chat API.
+Handles both per-function docstring generation and file-level summaries. The
+model is configurable via GROQ_MODEL (default: openai/gpt-oss-20b).
 """
 from __future__ import annotations
 
@@ -47,12 +48,37 @@ Rules:
 
 _DOCSTRING_PROMPT = (
     "You are a senior software engineer and technical writer.\n"
-    "Given the function below, return ONLY a Google-style docstring enclosed in triple double-quotes.\n"
-    "Include 1-line summary, Args, and Returns if applicable.\n"
+    "Write API documentation for the {language} function below.\n\n"
     "{func_sig}\n"
     "Source code:\n{source_code}\n\n"
-    "Return ONLY the docstring. Do not include the function signature."
+    "Requirements:\n"
+    "- Open with a single-sentence summary of what the function does.\n"
+    "- Then an 'Args:' section (one line per parameter) if it takes parameters.\n"
+    "- Then a 'Returns:' section if it returns a value.\n"
+    "- Output PLAIN TEXT only. Do NOT wrap it in markdown code fences or triple\n"
+    "  quotes, and do NOT prefix lines with //, /*, * or any other comment\n"
+    "  marker — the caller applies {language}'s own comment syntax afterwards.\n"
+    "- Do not repeat the function signature or the source code.\n"
+    "- Keep it under 120 words.\n"
 )
+
+# Used only to tell the model which language it is documenting, so the wording
+# stays idiomatic. The comment syntax itself is applied by the injector.
+_LANG_LABELS = {
+    ".py": "Python",
+    ".java": "Java",
+    ".js": "JavaScript",
+    ".jsx": "JavaScript",
+    ".ts": "TypeScript",
+    ".tsx": "TypeScript",
+    ".go": "Go",
+    ".rs": "Rust",
+    ".cpp": "C++",
+    ".cc": "C++",
+    ".hpp": "C++",
+    ".h": "C/C++",
+    ".c": "C",
+}
 
 
 # ---------------------------------------------------------------------------
@@ -60,35 +86,62 @@ _DOCSTRING_PROMPT = (
 # ---------------------------------------------------------------------------
 
 class GroqProvider(LLMProvider):
-    """LLM provider using Groq (Llama 3.1 8B Instant)."""
+    """LLM provider using Groq's OpenAI-compatible chat completions API."""
 
     name = "groq"
 
-    def __init__(self, api_key: Optional[str] = None, model: str = "llama-3.1-8b-instant"):
+    def __init__(self, api_key: Optional[str] = None, model: Optional[str] = None):
         self._api_key = api_key or os.getenv("GROQ_API_KEY", "")
         if not self._api_key:
             raise RuntimeError(
                 "GROQ_API_KEY is not set. Add it to your .env file or environment."
             )
-        self._model = model
+        # Groq retires models periodically (llama-3.1-8b-instant was shut down in
+        # 2026). Default to a current production model, but allow an override via
+        # GROQ_MODEL so a future deprecation is a .env change, not a code edit.
+        self._model = model or os.getenv("GROQ_MODEL", "openai/gpt-oss-20b")
         self._client = Groq(api_key=self._api_key)
 
+    def _reasoning_kwargs(self) -> dict:
+        """
+        GPT-OSS models on Groq are reasoning models: their chain-of-thought is
+        emitted as output tokens and therefore eats the completion budget, which
+        truncated docstrings mid-sentence. Request the cheapest reasoning tier.
+        Other models are left alone — the parameter is not universally accepted.
+        """
+        if self._model.startswith("openai/gpt-oss"):
+            return {"reasoning_effort": "low"}
+        return {}
+
     def generate_doc(self, func: FunctionSchema) -> str:
-        """Generate a Google-style docstring for a single function."""
-        func_sig = f"Function: {func.name}({', '.join(func.args)}) -> {func.return_type}"
-        prompt = _DOCSTRING_PROMPT.format(func_sig=func_sig, source_code=func.source_code)
+        """Generate documentation text for a single function (plain text, no delimiters)."""
+        language = _LANG_LABELS.get(Path(func.file_path).suffix.lower(), "source")
+        func_sig = f"Function: {func.name}({', '.join(func.args)})"
+        if func.return_type:
+            func_sig += f" -> {func.return_type}"
+        prompt = _DOCSTRING_PROMPT.format(
+            language=language, func_sig=func_sig, source_code=func.source_code
+        )
 
         try:
             response = self._client.chat.completions.create(
                 model=self._model,
                 messages=[{"role": "user", "content": prompt}],
                 temperature=0.2,
-                max_tokens=400,
+                max_completion_tokens=1024,
+                **self._reasoning_kwargs(),
             )
-            text = response.choices[0].message.content.strip()
-            if not text.startswith('"""'):
-                text = f'"""\n{text.strip("`")}\n"""'
-            return text
+            choice = response.choices[0]
+            # A half-finished docstring is worse than none at all: it would put a
+            # sentence that stops mid-word into the user's source file. Fail closed
+            # and let the injector skip this function.
+            if choice.finish_reason == "length":
+                print(
+                    f"[Groq] docstring for {func.name} hit the token limit — "
+                    "skipping rather than injecting a truncated comment."
+                )
+                return ""
+            return (choice.message.content or "").strip()
         except Exception as exc:
             print(f"[Groq] generate_doc failed: {exc}")
             return ""
@@ -133,7 +186,8 @@ class GroqProvider(LLMProvider):
                     {"role": "user", "content": user_prompt},
                 ],
                 temperature=0.3,
-                max_tokens=600,
+                max_completion_tokens=1600,
+                **self._reasoning_kwargs(),
             )
             return response.choices[0].message.content.strip()
         except Exception as exc:

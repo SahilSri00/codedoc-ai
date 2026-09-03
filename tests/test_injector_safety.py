@@ -146,3 +146,84 @@ def test_dry_run_never_writes(tmp_path, monkeypatch):
     assert result["injected"] == 1
     assert src.read_bytes() == original_bytes  # unchanged
     assert not (tmp_path / "sample.py.bak").exists()
+
+
+# ---------------------------------------------------------------------------
+# Fail-fast: an unparseable input must not reach the LLM
+# ---------------------------------------------------------------------------
+
+class ExplodingProvider:
+    """Fails the test if the injector asks it to generate anything."""
+
+    name = "exploding"
+
+    def __init__(self):
+        self.calls = []
+
+    def generate_doc(self, func) -> str:
+        self.calls.append(func.name)
+        raise AssertionError(
+            "generate_doc was called for a file that can never be written"
+        )
+
+    def summarize_file(self, file_path, functions, source_code=None) -> str:
+        return ""
+
+
+def test_unparseable_input_aborts_without_calling_the_llm(tmp_path, monkeypatch):
+    """
+    A .ts file is routed to the JavaScript grammar, which cannot parse type
+    annotations, so the fail-closed gate is guaranteed to refuse the write.
+    Discovering that *after* generating docstrings costs real API spend, so the
+    check must happen before any provider call.
+    """
+    # An untyped function (so at least one IS discovered, and we reach the
+    # syntax gate rather than the earlier "no functions found" exit) alongside
+    # a typed one that the JavaScript grammar cannot parse.
+    src = tmp_path / "typed.ts"
+    src.write_text(
+        "export function makeId() {\n"
+        "  return 1;\n"
+        "}\n"
+        "\n"
+        "export function classify(status: number): number {\n"
+        "  return status;\n"
+        "}\n",
+        encoding="utf-8",
+        newline="",
+    )
+    before = src.read_bytes()
+
+    provider = ExplodingProvider()
+    monkeypatch.setattr(injector, "get_provider", lambda name=None: provider)
+
+    result = injector.inject_docstrings(src, dry_run=False)
+
+    assert result["aborted"] is True
+    assert result["injected"] == 0
+    assert provider.calls == []           # the LLM was never invoked
+    assert src.read_bytes() == before     # byte-for-byte unchanged
+
+
+def test_abort_reason_names_the_grammar(tmp_path, monkeypatch):
+    """The message must point at the real cause, not imply we corrupted the file."""
+    src = tmp_path / "typed.ts"
+    src.write_text(
+        "export function makeId() {\n"
+        "  return 1;\n"
+        "}\n"
+        "\n"
+        "export function f(a: number): number {\n"
+        "  return a;\n"
+        "}\n",
+        encoding="utf-8",
+        newline="",
+    )
+    monkeypatch.setattr(injector, "get_provider", lambda name=None: ExplodingProvider())
+
+    reason = injector.inject_docstrings(src, dry_run=False)["reason"]
+
+    assert "does not parse" in reason
+    assert "ts" in reason
+    # Must NOT blame the modification — nothing was modified.
+    assert "modified source" not in reason

@@ -136,6 +136,15 @@ def validate_modification(
     """
     ok, reason = syntax_ok(modified_text, lang)
     if not ok:
+        # Distinguish "we broke it" from "it never parsed". A .ts file routed to
+        # the JavaScript grammar fails on its own type annotations, so blaming the
+        # modification would send the user hunting a bug that isn't in their file.
+        original_ok, _ = syntax_ok(original_text, lang)
+        if not original_ok:
+            return False, (
+                f"the original file already fails to parse with the '{lang}' grammar, "
+                "so no modification can be verified (the file was left unchanged)"
+            )
         return False, reason
 
     new_count = count_functions_in_text(modified_text, lang, suffix)
